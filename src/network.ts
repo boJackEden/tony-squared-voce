@@ -1,42 +1,50 @@
-import { Platform } from 'react-native';
-import TcpSocket from 'react-native-tcp-socket';
+import NetInfo from '@react-native-community/netinfo';
 
-export const STREAM_PORT = 8080;
+export const SIGNALING_PORT = 8080;
 
 // Default hotspot IP for Android
 export const DEFAULT_HOST_IP = '192.168.43.1';
 
-// Audio format constants (must match between host and listener)
-export const AUDIO_CONFIG = {
-  sampleRate: 16000 as const,
-  channels: 1 as const,
-  encoding: 'pcm_16bit' as const,
-  // Chunk interval in ms — smaller = lower latency, more overhead
-  intervalMs: 20,
-};
+// Signaling message types for WebRTC handshake
+export type SignalingMessage =
+  | { type: 'offer'; sdp: string }
+  | { type: 'answer'; sdp: string }
+  | { type: 'ice-candidate'; candidate: any | null };
+
+export function sendSignalingMessage(socket: any, msg: SignalingMessage): void {
+  socket.write(JSON.stringify(msg) + '\n');
+}
+
+export function parseSignalingMessages(
+  chunk: string,
+  partialRef: { current: string }
+): SignalingMessage[] {
+  const combined = partialRef.current + chunk;
+  const lines = combined.split('\n');
+  partialRef.current = lines.pop() || '';
+
+  const messages: SignalingMessage[] = [];
+  for (const line of lines) {
+    if (line.length === 0) continue;
+    try {
+      messages.push(JSON.parse(line));
+    } catch {
+      // skip malformed
+    }
+  }
+  return messages;
+}
 
 /**
- * Get the device's local IP address by connecting to a known address.
- * Works on both iOS and Android without extra permissions.
+ * Get the device's local IP address from the OS network interface.
+ * Works without internet — reads directly from Wi-Fi/hotspot interface.
  */
 export async function getLocalIpAddress(): Promise<string | null> {
   try {
-    return new Promise((resolve) => {
-      const socket = TcpSocket.createConnection(
-        { host: '8.8.8.8', port: 80 },
-        () => {
-          const address = socket.address() as { address?: string };
-          socket.destroy();
-          resolve(address?.address || null);
-        }
-      );
-      socket.on('error', () => {
-        socket.destroy();
-        // Fallback: common hotspot IPs
-        resolve(Platform.OS === 'android' ? '192.168.43.1' : '172.20.10.1');
-      });
-    });
+    const info = await NetInfo.fetch();
+    const ip = (info.details as any)?.ipAddress ?? null;
+    return ip;
   } catch {
-    return Platform.OS === 'android' ? '192.168.43.1' : '172.20.10.1';
+    return null;
   }
 }

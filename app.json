@@ -7,7 +7,7 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "plugins": [
-      "@mykin-ai/expo-audio-stream",
+      "@config-plugins/react-native-webrtc",
       ["expo-build-properties", {
         "ios": {
           "deploymentTarget": "15.1"

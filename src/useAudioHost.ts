@@ -1,10 +1,21 @@
 import { useCallback, useRef, useState } from 'react';
-import { ExpoPlayAudioStream } from '@mykin-ai/expo-audio-stream';
+import {
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+  mediaDevices,
+  MediaStream,
+} from 'react-native-webrtc';
 import TcpSocket from 'react-native-tcp-socket';
-import { STREAM_PORT, AUDIO_CONFIG, getLocalIpAddress } from './network';
+import {
+  SIGNALING_PORT,
+  getLocalIpAddress,
+  sendSignalingMessage,
+  parseSignalingMessages,
+} from './network';
 
 type TcpServer = ReturnType<typeof TcpSocket.createServer>;
-type Socket = any; // TcpSocket socket type
+type Socket = any;
 
 interface HostState {
   isBroadcasting: boolean;
@@ -26,70 +37,99 @@ export function useAudioHost() {
   });
 
   const serverRef = useRef<TcpServer | null>(null);
-  const clientsRef = useRef<Set<Socket>>(new Set());
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peersRef = useRef<Map<Socket, RTCPeerConnection>>(new Map());
+  const partialBuffersRef = useRef<Map<Socket, { current: string }>>(new Map());
 
-  const broadcastToClients = useCallback((base64Data: string) => {
-    const clients = clientsRef.current;
-    if (clients.size === 0) return;
-
-    // Send base64 PCM data with newline delimiter
-    const message = base64Data + '\n';
-    for (const client of clients) {
-      try {
-        client.write(message);
-      } catch {
-        // Client disconnected, will be cleaned up on 'close' event
-      }
-    }
+  const updateListenerCount = useCallback(() => {
+    const count = peersRef.current.size;
+    setState((s) => ({ ...s, listenerCount: count }));
   }, []);
+
+  const cleanupPeer = useCallback((socket: Socket) => {
+    const pc = peersRef.current.get(socket);
+    if (pc) {
+      pc.close();
+      peersRef.current.delete(socket);
+    }
+    partialBuffersRef.current.delete(socket);
+    try {
+      socket.destroy();
+    } catch {}
+    updateListenerCount();
+  }, [updateListenerCount]);
 
   const startBroadcasting = useCallback(async () => {
     if (state.isStarting || state.isBroadcasting) return;
     setState((s) => ({ ...s, isStarting: true, error: null }));
 
     try {
-      // Request mic permission
-      const { granted } = await ExpoPlayAudioStream.requestPermissionsAsync();
-      if (!granted) {
-        setState((s) => ({ ...s, error: 'Microphone permission denied' }));
-        return;
-      }
+      // Capture microphone audio via WebRTC (handles permission prompting)
+      const stream = await mediaDevices.getUserMedia({
+        audio: true,
+        video: false,
+      });
+      localStreamRef.current = stream as MediaStream;
 
-      // Get local IP
+      // Get local IP (may be null if detection fails)
       const localIp = await getLocalIpAddress();
 
-      // Start TCP server
-      const server = TcpSocket.createServer((socket) => {
-        clientsRef.current.add(socket);
-        setState((s) => ({ ...s, listenerCount: clientsRef.current.size }));
+      // Start TCP signaling server
+      const server = TcpSocket.createServer(async (socket) => {
+        const partialRef = { current: '' };
+        partialBuffersRef.current.set(socket, partialRef);
 
-        socket.on('close', () => {
-          clientsRef.current.delete(socket);
-          setState((s) => ({ ...s, listenerCount: clientsRef.current.size }));
+        // Create peer connection (no STUN/TURN for local network)
+        const pc = new RTCPeerConnection({ iceServers: [] });
+        peersRef.current.set(socket, pc);
+        updateListenerCount();
+
+        // Add audio track from local stream
+        const audioTrack = localStreamRef.current!.getAudioTracks()[0];
+        pc.addTrack(audioTrack, localStreamRef.current!);
+
+        // Send ICE candidates to listener
+        pc.addEventListener('icecandidate', (event) => {
+          sendSignalingMessage(socket, {
+            type: 'ice-candidate',
+            candidate: event.candidate ? event.candidate.toJSON() : null,
+          });
         });
 
-        socket.on('error', () => {
-          clientsRef.current.delete(socket);
-          setState((s) => ({ ...s, listenerCount: clientsRef.current.size }));
+        // Create and send offer
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: false,
+          offerToReceiveVideo: false,
+        } as any);
+        await pc.setLocalDescription(offer);
+
+        sendSignalingMessage(socket, {
+          type: 'offer',
+          sdp: offer.sdp!,
         });
-      });
 
-      server.listen({ port: STREAM_PORT, host: '0.0.0.0' });
-      serverRef.current = server;
-
-      // Start recording with chunk callbacks
-      await ExpoPlayAudioStream.startRecording({
-        sampleRate: AUDIO_CONFIG.sampleRate,
-        channels: AUDIO_CONFIG.channels,
-        encoding: AUDIO_CONFIG.encoding,
-        interval: AUDIO_CONFIG.intervalMs,
-        onAudioStream: async (event) => {
-          // event.data is base64 encoded PCM
-          if (typeof event.data === 'string') {
-            broadcastToClients(event.data);
+        // Handle signaling messages from listener
+        socket.on('data', (data: Buffer | string) => {
+          const chunk = typeof data === 'string' ? data : data.toString('utf-8');
+          const messages = parseSignalingMessages(chunk, partialRef);
+          for (const msg of messages) {
+            if (msg.type === 'answer') {
+              pc.setRemoteDescription(
+                new RTCSessionDescription({ type: 'answer', sdp: msg.sdp })
+              );
+            } else if (msg.type === 'ice-candidate' && msg.candidate) {
+              pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            }
           }
-        },
+        });
+
+        // Cleanup on disconnect
+        socket.on('close', () => cleanupPeer(socket));
+        socket.on('error', () => cleanupPeer(socket));
       });
+
+      server.listen({ port: SIGNALING_PORT, host: '0.0.0.0' });
+      serverRef.current = server;
 
       setState({
         isBroadcasting: true,
@@ -106,24 +146,28 @@ export function useAudioHost() {
         error: err?.message || 'Failed to start broadcasting',
       }));
     }
-  }, [state.isStarting, state.isBroadcasting, broadcastToClients]);
+  }, [state.isStarting, state.isBroadcasting, updateListenerCount, cleanupPeer]);
 
   const stopBroadcasting = useCallback(async () => {
     setState((s) => ({ ...s, isStopping: true }));
 
-    try {
-      await ExpoPlayAudioStream.stopRecording();
-    } catch {}
-
-    // Close all client connections
-    for (const client of clientsRef.current) {
+    // Close all peer connections and sockets
+    for (const [socket, pc] of peersRef.current) {
+      pc.close();
       try {
-        client.destroy();
+        socket.destroy();
       } catch {}
     }
-    clientsRef.current.clear();
+    peersRef.current.clear();
+    partialBuffersRef.current.clear();
 
-    // Stop server
+    // Stop local media stream
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track: any) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    // Stop TCP signaling server
     if (serverRef.current) {
       try {
         serverRef.current.close();

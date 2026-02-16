@@ -1,101 +1,100 @@
 import { useCallback, useRef, useState } from 'react';
-import { ExpoPlayAudioStream } from '@mykin-ai/expo-audio-stream';
+import {
+  RTCPeerConnection,
+  RTCSessionDescription,
+  RTCIceCandidate,
+} from 'react-native-webrtc';
 import TcpSocket from 'react-native-tcp-socket';
-import { STREAM_PORT } from './network';
+import {
+  SIGNALING_PORT,
+  sendSignalingMessage,
+  parseSignalingMessages,
+} from './network';
 
 type Socket = any;
 
 interface ListenerState {
+  isConnecting: boolean;
   isConnected: boolean;
   isPlaying: boolean;
   error: string | null;
-  bufferHealth: string;
 }
-
-const TURN_ID = 'live-stream';
 
 export function useAudioListener() {
   const [state, setState] = useState<ListenerState>({
+    isConnecting: false,
     isConnected: false,
     isPlaying: false,
     error: null,
-    bufferHealth: 'idle',
   });
 
   const socketRef = useRef<Socket | null>(null);
-  const isFirstChunkRef = useRef(true);
-  const partialDataRef = useRef('');
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const partialRef = useRef('');
 
   const connect = useCallback(async (hostIp: string) => {
+    setState((s) => ({ ...s, isConnecting: true, error: null }));
+    partialRef.current = '';
+
     try {
-      // Configure playback for voice streaming
-      await ExpoPlayAudioStream.setSoundConfig({
-        sampleRate: 16000,
-        playbackMode: 'regular',
-        enableBuffering: true,
-        bufferConfig: {
-          targetBufferMs: 300,
-          minBufferMs: 150,
-          maxBufferMs: 600,
-          frameIntervalMs: 20,
-        },
+      // Create peer connection (no STUN/TURN for local network)
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      pcRef.current = pc;
+
+      // When remote audio track arrives, WebRTC plays it automatically
+      pc.addEventListener('track', () => {
+        setState((s) => ({ ...s, isPlaying: true }));
       });
 
-      // Start the buffered audio stream
-      await ExpoPlayAudioStream.startBufferedAudioStream({
-        turnId: TURN_ID,
-        encoding: 'pcm_s16le',
-        bufferConfig: {
-          targetBufferMs: 300,
-          minBufferMs: 150,
-          maxBufferMs: 600,
-          frameIntervalMs: 20,
-        },
-        onBufferHealth: (metrics) => {
+      // Monitor connection state
+      pc.addEventListener('connectionstatechange', () => {
+        const connState = pc.connectionState;
+        if (connState === 'connected') {
+          setState((s) => ({ ...s, isConnected: true, isConnecting: false }));
+        } else if (connState === 'failed' || connState === 'disconnected') {
           setState((s) => ({
             ...s,
-            bufferHealth: metrics.bufferHealthState,
-          }));
-        },
-      });
-
-      isFirstChunkRef.current = true;
-      partialDataRef.current = '';
-
-      // Connect via TCP
-      const socket = TcpSocket.createConnection(
-        { host: hostIp, port: STREAM_PORT },
-        () => {
-          setState((s) => ({
-            ...s,
-            isConnected: true,
-            isPlaying: true,
-            error: null,
+            error: 'Connection lost',
+            isConnected: false,
+            isPlaying: false,
           }));
         }
+      });
+
+      // Connect TCP socket to host for signaling
+      const socket = TcpSocket.createConnection(
+        { host: hostIp, port: SIGNALING_PORT },
+        () => {
+          // TCP connected — waiting for offer from host
+        }
       );
+      socketRef.current = socket;
 
-      socket.on('data', (data: Buffer | string) => {
+      // Send ICE candidates to host
+      pc.addEventListener('icecandidate', (event) => {
+        sendSignalingMessage(socket, {
+          type: 'ice-candidate',
+          candidate: event.candidate ? event.candidate.toJSON() : null,
+        });
+      });
+
+      // Handle signaling messages from host
+      socket.on('data', async (data: Buffer | string) => {
         const chunk = typeof data === 'string' ? data : data.toString('utf-8');
-        // Data is newline-delimited base64 chunks
-        const combined = partialDataRef.current + chunk;
-        const lines = combined.split('\n');
-
-        // Last element might be incomplete
-        partialDataRef.current = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.length === 0) continue;
-          try {
-            ExpoPlayAudioStream.playAudioBuffered(
-              line,
-              TURN_ID,
-              isFirstChunkRef.current,
-              false
+        const messages = parseSignalingMessages(chunk, partialRef);
+        for (const msg of messages) {
+          if (msg.type === 'offer') {
+            await pc.setRemoteDescription(
+              new RTCSessionDescription({ type: 'offer', sdp: msg.sdp })
             );
-            isFirstChunkRef.current = false;
-          } catch {
-            // Skip malformed chunks
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sendSignalingMessage(socket, {
+              type: 'answer',
+              sdp: answer.sdp!,
+            });
+          } else if (msg.type === 'ice-candidate' && msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
           }
         }
       });
@@ -103,6 +102,7 @@ export function useAudioListener() {
       socket.on('error', (err: any) => {
         setState((s) => ({
           ...s,
+          isConnecting: false,
           error: err?.message || 'Connection error',
           isConnected: false,
         }));
@@ -111,40 +111,38 @@ export function useAudioListener() {
       socket.on('close', () => {
         setState((s) => ({
           ...s,
+          isConnecting: false,
           isConnected: false,
           isPlaying: false,
         }));
       });
-
-      socketRef.current = socket;
     } catch (err: any) {
       setState((s) => ({
         ...s,
+        isConnecting: false,
         error: err?.message || 'Failed to connect',
       }));
     }
   }, []);
 
-  const disconnect = useCallback(async () => {
+  const disconnect = useCallback(() => {
+    if (pcRef.current) {
+      pcRef.current.close();
+      pcRef.current = null;
+    }
     if (socketRef.current) {
       try {
         socketRef.current.destroy();
       } catch {}
       socketRef.current = null;
     }
-
-    try {
-      await ExpoPlayAudioStream.stopBufferedAudioStream(TURN_ID);
-    } catch {}
-
-    partialDataRef.current = '';
-    isFirstChunkRef.current = true;
+    partialRef.current = '';
 
     setState({
+      isConnecting: false,
       isConnected: false,
       isPlaying: false,
       error: null,
-      bufferHealth: 'idle',
     });
   }, []);
 

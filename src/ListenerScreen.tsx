@@ -8,6 +8,7 @@ import {
   SafeAreaView,
   Keyboard,
   TouchableWithoutFeedback,
+  ActivityIndicator,
 } from 'react-native';
 import { useAudioListener } from './useAudioListener';
 import { DEFAULT_HOST_IP } from './network';
@@ -18,7 +19,7 @@ interface ListenerScreenProps {
 
 export function ListenerScreen({ onBack }: ListenerScreenProps) {
   const [hostIp, setHostIp] = useState(DEFAULT_HOST_IP);
-  const { isConnected, isPlaying, error, bufferHealth, connect, disconnect } =
+  const { isConnecting, isConnected, isPlaying, error, connect, disconnect } =
     useAudioListener();
 
   const handleToggle = () => {
@@ -28,13 +29,6 @@ export function ListenerScreen({ onBack }: ListenerScreenProps) {
       connect(hostIp);
     }
   };
-
-  const healthColor = {
-    idle: '#9E9E9E',
-    healthy: '#4CAF50',
-    degraded: '#FF9800',
-    critical: '#F44336',
-  }[bufferHealth] || '#9E9E9E';
 
   return (
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
@@ -80,15 +74,6 @@ export function ListenerScreen({ onBack }: ListenerScreenProps) {
         {isPlaying && (
           <View style={styles.playbackInfo}>
             <Text style={styles.playingText}>Receiving Audio</Text>
-            <View style={styles.healthRow}>
-              <Text style={styles.healthLabel}>Buffer: </Text>
-              <View
-                style={[styles.healthDot, { backgroundColor: healthColor }]}
-              />
-              <Text style={[styles.healthText, { color: healthColor }]}>
-                {bufferHealth}
-              </Text>
-            </View>
           </View>
         )}
 
@@ -97,13 +82,21 @@ export function ListenerScreen({ onBack }: ListenerScreenProps) {
         <TouchableOpacity
           style={[
             styles.mainButton,
-            { backgroundColor: isConnected ? '#F44336' : '#4CAF50' },
+            { backgroundColor: isConnecting ? '#999' : isConnected ? '#F44336' : '#4CAF50' },
           ]}
           onPress={handleToggle}
+          disabled={isConnecting}
         >
-          <Text style={styles.buttonText}>
-            {isConnected ? 'Disconnect' : 'Connect'}
-          </Text>
+          {isConnecting ? (
+            <View style={styles.connectingRow}>
+              <ActivityIndicator color="#fff" size="small" />
+              <Text style={[styles.buttonText, { marginLeft: 8 }]}>Connecting…</Text>
+            </View>
+          ) : (
+            <Text style={styles.buttonText}>
+              {isConnected ? 'Disconnect' : 'Connect'}
+            </Text>
+          )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -176,24 +169,6 @@ const styles = StyleSheet.create({
     color: '#4CAF50',
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  healthRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  healthLabel: {
-    color: '#999',
-    fontSize: 14,
-  },
-  healthDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 4,
-  },
-  healthText: {
-    fontSize: 14,
   },
   errorText: {
     color: '#F44336',
@@ -206,6 +181,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 48,
     borderRadius: 30,
     marginTop: 16,
+  },
+  connectingRow: {
+    flexDirection: 'row' as const,
+    alignItems: 'center' as const,
   },
   buttonText: {
     color: '#fff',

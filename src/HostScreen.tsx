@@ -8,7 +8,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useAudioHost } from './useAudioHost';
-import { STREAM_PORT } from './network';
+import { SIGNALING_PORT } from './network';
 
 interface HostScreenProps {
   onBack: () => void;
@@ -37,12 +37,16 @@ export function HostScreen({ onBack }: HostScreenProps) {
       <View style={styles.content}>
         <Text style={styles.title}>Host Mode</Text>
 
-        {isBroadcasting && localIp && (
+        {isBroadcasting && (
           <View style={styles.infoBox}>
             <Text style={styles.infoLabel}>Your IP Address</Text>
-            <Text style={styles.ipText}>{localIp}:{STREAM_PORT}</Text>
+            {localIp ? (
+              <Text style={styles.ipText}>{localIp}:{SIGNALING_PORT}</Text>
+            ) : (
+              <Text style={styles.ipText}>Check Wi-Fi settings</Text>
+            )}
             <Text style={styles.hint}>
-              Share this with listeners to connect
+              {localIp ? 'Share this with listeners to connect' : 'Go to Settings → Wi-Fi → tap (i) to find your IP'}
             </Text>
           </View>
         )}
