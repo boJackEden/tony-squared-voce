@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
+  Keyboard,
+  TouchableWithoutFeedback,
 } from 'react-native';
 import { useAudioListener } from './useAudioListener';
 import { DEFAULT_HOST_IP } from './network';
@@ -35,6 +37,7 @@ export function ListenerScreen({ onBack }: ListenerScreenProps) {
   }[bufferHealth] || '#9E9E9E';
 
   return (
+    <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
     <SafeAreaView style={styles.container}>
       <TouchableOpacity
         style={styles.backButton}
@@ -104,6 +107,7 @@ export function ListenerScreen({ onBack }: ListenerScreenProps) {
         </TouchableOpacity>
       </View>
     </SafeAreaView>
+    </TouchableWithoutFeedback>
   );
 }
 
