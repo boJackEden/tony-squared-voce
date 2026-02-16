@@ -6,25 +6,41 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
+    "plugins": [
+      "@mykin-ai/expo-audio-stream",
+      ["expo-build-properties", {
+        "ios": {
+          "deploymentTarget": "15.1"
+        }
+      }]
+    ],
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anthonymazzola.voce",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Voce needs microphone access to broadcast audio as a tour guide host.",
+        "NSLocalNetworkUsageDescription": "Voce uses the local network to stream audio between host and listener devices.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      }
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "551f2fce-e710-4993-a1a6-ff0f03f5447a"
+      }
     }
   }
 }
