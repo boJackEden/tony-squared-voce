@@ -16,6 +16,11 @@
         "autoIncrement": true,
         "image": "latest"
       }
+    },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "ios": { "simulator": false }
     }
   }
 }
